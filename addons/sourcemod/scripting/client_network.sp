@@ -7,12 +7,26 @@ public Plugin myinfo = {
     name        = "ClientNetwork",
     author      = "Lomaka [Edited by Dosergen], TouchMe",
     description = "Automatically corrects network settings",
-    version     = "build_0001",
+    version     = "build_0002",
     url         = "https://github.com/TouchMe-Inc/l4d2_client_network"
 }
 
 
+#define CVAR_COUNT 4
+
+enum CvarIndex
+{
+    Cvar_Lerp,
+    Cvar_Rate,
+    Cvar_CmdRate,
+    Cvar_UpdateRate
+}
+
 bool g_bLateLoad = false;
+
+/* sm_cn_always_show_motd */
+ConVar g_cvAlwaysShowMotd = null;
+bool g_bAlwaysShowMotd = false;
 
 /* sm_cn_only_on_connect */
 ConVar g_cvOnlyOnConnect = null;
@@ -26,23 +40,15 @@ char g_szTitle[128];
 ConVar g_cvMessage = null;
 char g_szMessage[512];
 
-/* sm_cn_cl_interp */
-ConVar g_cvLerp = null;
-char g_szLerp[8];
+ConVar g_cvCvars[CVAR_COUNT];
+char   g_szCvarValues[CVAR_COUNT][8];
 
-/* sm_cn_rate */
-ConVar g_cvRate = null;
-char g_szRate[8];
+char g_szCheckCvars[CVAR_COUNT][] = { "cl_interp", "rate", "cl_cmdrate", "cl_updaterate" };
 
-/* sm_cn_cl_cmdrate */
-ConVar g_cvCmdRate = null;
-char g_szCmdRate[8];
-
-/* sm_cn_cl_updaterate */
-ConVar g_cvUpdateRate = null;
-char g_szUpdateRate[8];
 
 bool g_bWasConnected[MAXPLAYERS + 1];
+bool g_bWasShowed[MAXPLAYERS + 1];
+
 
 /**
  * Called before OnPluginStart.
@@ -62,65 +68,80 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max
 
 public void OnPluginStart()
 {
-    g_cvOnlyOnConnect = CreateConVar("sm_cn_only_on_connect", "1",                       "..",                FCVAR_NOTIFY, true, 0.0, true, 1.0);
-    g_cvTitle         = CreateConVar("sm_cn_title",           "Update network settings", "Motd title",        FCVAR_NOTIFY);
-    g_cvMessage       = CreateConVar("sm_cn_message",         "",                        "Motd message",      FCVAR_NOTIFY);
-    g_cvLerp          = CreateConVar("sm_cn_cl_interp",       "0.0",                     "Client lerp",       FCVAR_NOTIFY, true, 0.0, true, 0.1);
-    g_cvRate          = CreateConVar("sm_cn_rate",            "100000",                  "Client rate",       FCVAR_NOTIFY, true, 30.0, true, 128000.0);
-    g_cvCmdRate       = CreateConVar("sm_cn_cl_cmdrate",      "100",                     "Client cmdrate",    FCVAR_NOTIFY, true, 30.0, true, 128.0);
-    g_cvUpdateRate    = CreateConVar("sm_cn_cl_updaterate",   "100",                     "Client updaterate", FCVAR_NOTIFY, true, 30.0, true, 128.0);
+    g_cvOnlyOnConnect          = CreateConVar("sm_cn_only_on_connect",  "1",                       "..",                _, true, 0.0, true, 1.0);
+    g_cvAlwaysShowMotd         = CreateConVar("sm_cn_always_show_motd", "1",                       "..",               _, true, 0.0, true, 1.0);
+    g_cvTitle                  = CreateConVar("sm_cn_title",            "Update network settings", "Motd title");
+    g_cvMessage                = CreateConVar("sm_cn_message",          "",                        "Motd message");
+    g_cvCvars[Cvar_Lerp]       = CreateConVar("sm_cn_cl_interp",        "0.0",                     "Client lerp",       _, true, 0.0, true, 0.1);
+    g_cvCvars[Cvar_Rate]       = CreateConVar("sm_cn_rate",             "100000",                  "Client rate",       _, true, 30.0, true, 128000.0);
+    g_cvCvars[Cvar_CmdRate]    = CreateConVar("sm_cn_cl_cmdrate",       "100",                     "Client cmdrate",    _, true, 30.0, true, 128.0);
+    g_cvCvars[Cvar_UpdateRate] = CreateConVar("sm_cn_cl_updaterate",    "100",                     "Client updaterate", _, true, 30.0, true, 128.0);
 
-    HookConVarChange(g_cvOnlyOnConnect, OnConVarChange_OnlyOnConnect);
-    HookConVarChange(g_cvTitle,         OnConVarChange_Title);
-    HookConVarChange(g_cvMessage,       OnConVarChange_Message);
-    HookConVarChange(g_cvLerp,          OnConVarChange_Lerp);
-    HookConVarChange(g_cvRate,          OnConVarChange_Rate);
-    HookConVarChange(g_cvCmdRate,       OnConVarChange_CmdRate);
-    HookConVarChange(g_cvUpdateRate,    OnConVarChange_UpdateRate);
+    HookEvent("player_disconnect", Event_PlayerDisconnect, EventHookMode_Pre);
+
+    HookConVarChange(g_cvOnlyOnConnect,  OnCvarChange_OnlyOnConnect);
+    HookConVarChange(g_cvAlwaysShowMotd, OnCvarChange_AlwaysShowMotd);
+    HookConVarChange(g_cvTitle,          OnCvarChange_Title);
+    HookConVarChange(g_cvMessage,        OnCvarChange_Message);
+
+    for (int i = 0; i < CVAR_COUNT; i++) {
+        HookConVarChange(g_cvCvars[i],   OnCvarChange_Network);
+    }
 
     g_bOnlyOnConnect = GetConVarBool(g_cvOnlyOnConnect);
+    g_bAlwaysShowMotd = GetConVarBool(g_cvAlwaysShowMotd);
     GetConVarString(g_cvTitle, g_szTitle, sizeof g_szTitle);
     GetConVarString(g_cvMessage, g_szMessage, sizeof g_szMessage);
-    GetConVarString(g_cvLerp, g_szLerp, sizeof g_szLerp);
-    GetConVarString(g_cvRate, g_szRate, sizeof g_szRate);
-    GetConVarString(g_cvCmdRate, g_szCmdRate, sizeof g_szCmdRate);
-    GetConVarString(g_cvUpdateRate, g_szUpdateRate, sizeof g_szUpdateRate);
 
-    if (g_bLateLoad)
-    {
-        for (int iClient = 1; iClient <= MaxClients; iClient++)
-        {
+    for (int i = 0; i < CVAR_COUNT; i++)  {
+        GetConVarString(g_cvCvars[i], g_szCvarValues[i], sizeof g_szCvarValues[]);
+    }
+
+    if (g_bLateLoad) {
+        for (int iClient = 1; iClient <= MaxClients; iClient++) {
             OnClientPostAdminCheck(iClient);
         }
     }
 }
 
-void OnConVarChange_OnlyOnConnect(ConVar cv, const char[] szOldValue, const char[] szNewValue) {
+void Event_PlayerDisconnect(Event event, const char[] szName, bool bDontBroadcast)
+{
+    int iClient = GetClientOfUserId(GetEventInt(event, "userid"));
+
+    if (!iClient || !IsClientConnected(iClient) || IsFakeClient(iClient)) {
+        return;
+    }
+
+    g_bWasShowed[iClient] = false;
+    g_bWasConnected[iClient] = false;
+}
+
+void OnCvarChange_AlwaysShowMotd(ConVar cv, const char[] szOldValue, const char[] szNewValue) {
+    g_bAlwaysShowMotd = GetConVarBool(cv);
+}
+
+void OnCvarChange_OnlyOnConnect(ConVar cv, const char[] szOldValue, const char[] szNewValue) {
     g_bOnlyOnConnect = GetConVarBool(cv);
 }
 
-void OnConVarChange_Title(ConVar cv, const char[] szOldValue, const char[] szNewValue) {
-    GetConVarString(cv, g_szTitle, sizeof g_szTitle);
+void OnCvarChange_Title(ConVar cv, const char[] szOldValue, const char[] szNewValue) {
+    strcopy(g_szTitle, sizeof g_szTitle, szNewValue);
 }
 
-void OnConVarChange_Message(ConVar cv, const char[] szOldValue, const char[] szNewValue) {
-    GetConVarString(cv, g_szMessage, sizeof g_szMessage);
+void OnCvarChange_Message(ConVar cv, const char[] szOldValue, const char[] szNewValue) {
+    strcopy(g_szMessage, sizeof g_szMessage, szNewValue);
 }
 
-void OnConVarChange_Lerp(ConVar cv, const char[] szOldValue, const char[] szNewValue) {
-    GetConVarString(cv, g_szLerp, sizeof g_szLerp);
-}
-
-void OnConVarChange_Rate(ConVar cv, const char[] szOldValue, const char[] szNewValue) {
-    GetConVarString(cv, g_szRate, sizeof g_szRate);
-}
-
-void OnConVarChange_CmdRate(ConVar cv, const char[] szOldValue, const char[] szNewValue) {
-    GetConVarString(cv, g_szCmdRate, sizeof g_szCmdRate);
-}
-
-void OnConVarChange_UpdateRate(ConVar cv, const char[] szOldValue, const char[] szNewValue) {
-    GetConVarString(cv, g_szUpdateRate, sizeof g_szUpdateRate);
+void OnCvarChange_Network(ConVar cv, const char[] szOldValue, const char[] szNewValue)
+{
+    for (int i = 0; i < CVAR_COUNT; i++)
+    {
+        if (g_cvCvars[i] == cv)
+        {
+            strcopy(g_szCvarValues[i], sizeof g_szCvarValues[], szNewValue);
+            break;
+        }
+    }
 }
 
 public void OnClientPostAdminCheck(int iClient)
@@ -133,18 +154,10 @@ public void OnClientPostAdminCheck(int iClient)
         return;
     }
 
-    QueryClientConVars(iClient);
-
+    g_bWasShowed[iClient] = false;
     g_bWasConnected[iClient] = true;
-}
 
-public void OnClientDisconnect(int iClient)
-{
-    if (!IsFakeClient(iClient)) {
-        return;
-    }
-
-    g_bWasConnected[iClient] = false;
+    QueryClientConVars(iClient);
 }
 
 public void OnClientSettingsChanged(int iClient)
@@ -160,27 +173,47 @@ public void OnClientSettingsChanged(int iClient)
 
 void QueryClientConVars(int iClient)
 {
-    QueryClientConVar(iClient, "cl_interp", ChangeClientCv);
-    QueryClientConVar(iClient, "rate", ChangeClientCv);
-    QueryClientConVar(iClient, "cl_cmdrate", ChangeClientCv);
-    QueryClientConVar(iClient, "cl_updaterate", ChangeClientCv);
+    for (int i = 0; i < CVAR_COUNT; i++)
+    {
+        QueryClientConVar(iClient, g_szCheckCvars[i], ChangeClientCvar);
+    }
 }
 
-void ChangeClientCv(QueryCookie cookie, int iClient, ConVarQueryResult result, const char[] szName, const char[] szValue)
+void ChangeClientCvar(QueryCookie cookie, int iClient, ConVarQueryResult result, const char[] szName, const char[] szValue)
 {
-    if ((StrEqual(szName, "cl_interp", true)    && !StrEqual(g_szLerp, szValue, true))
-    || (StrEqual(szName, "rate", true)          && !StrEqual(g_szRate, szValue, true))
-    || (StrEqual(szName, "cl_cmdrate", true)    && !StrEqual(g_szCmdRate, szValue, true))
-    || (StrEqual(szName, "cl_updaterate", true) && !StrEqual(g_szUpdateRate, szValue, true)))
+    bool bNeedSend = false;
+
+    for (int i = 0; i < CVAR_COUNT; i++)
     {
-        SendClientCmd(iClient, "cl_interp %s;rate %s;cl_cmdrate %s;cl_updaterate %s;motd_confirm", g_szLerp, g_szRate, g_szCmdRate, g_szUpdateRate);
-    } 
+        if (!StrEqual(g_szCheckCvars[i], szName, true)) {
+            continue;
+        }
+
+        if (!StrEqual(g_szCvarValues[i], szValue, true))
+        {
+            bNeedSend = true;
+            break;
+        }
+    }
+
+    if (bNeedSend || (!g_bWasShowed[iClient] && g_bAlwaysShowMotd))
+    {
+        SendClientCmd(
+            iClient, 
+            "cl_interp %s;rate %s;cl_cmdrate %s;cl_updaterate %s;motd_confirm", 
+            g_szCvarValues[Cvar_Lerp], 
+            g_szCvarValues[Cvar_Rate], 
+            g_szCvarValues[Cvar_CmdRate], 
+            g_szCvarValues[Cvar_UpdateRate]
+        );
+        g_bWasShowed[iClient] = true;
+    }
 }
 
 void SendClientCmd(int iClient, const char[] szCmd, any ...)
 {
     char szFormatCmd[192];
-    VFormat(szFormatCmd, sizeof(szFormatCmd), szCmd, 3);
+    VFormat(szFormatCmd, sizeof szFormatCmd, szCmd, 3);
 
     KeyValues kv = CreateKeyValues("data");
     kv.SetString("title", g_szTitle);
@@ -188,5 +221,6 @@ void SendClientCmd(int iClient, const char[] szCmd, any ...)
     kv.SetString("msg", g_szMessage);
     kv.SetString("cmd", szFormatCmd);
     ShowVGUIPanel(iClient, "info", kv);
+
     delete kv;
 }

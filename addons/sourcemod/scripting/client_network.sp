@@ -181,6 +181,10 @@ void QueryClientConVars(int iClient)
 
 void ChangeClientCvar(QueryCookie cookie, int iClient, ConVarQueryResult result, const char[] szName, const char[] szValue)
 {
+    if (!IsClientInGame(iClient)) {
+        return;
+    }
+
     bool bNeedSend = false;
 
     for (int i = 0; i < CVAR_COUNT; i++)
@@ -199,11 +203,11 @@ void ChangeClientCvar(QueryCookie cookie, int iClient, ConVarQueryResult result,
     if (bNeedSend || (!g_bWasShowed[iClient] && g_bAlwaysShowMotd))
     {
         SendClientCmd(
-            iClient, 
-            "cl_interp %s;rate %s;cl_cmdrate %s;cl_updaterate %s;motd_confirm", 
-            g_szCvarValues[Cvar_Lerp], 
-            g_szCvarValues[Cvar_Rate], 
-            g_szCvarValues[Cvar_CmdRate], 
+            iClient,
+            "cl_interp %s;rate %s;cl_cmdrate %s;cl_updaterate %s;motd_confirm",
+            g_szCvarValues[Cvar_Lerp],
+            g_szCvarValues[Cvar_Rate],
+            g_szCvarValues[Cvar_CmdRate],
             g_szCvarValues[Cvar_UpdateRate]
         );
         g_bWasShowed[iClient] = true;
